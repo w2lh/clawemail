@@ -1,0 +1,7 @@
+node_modules/
+dist/
+data/
+.env
+.env.local
+.codex-run/
+npm-debug.log*
