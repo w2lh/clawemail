@@ -1,218 +1,241 @@
 # Claw Email Web Manager
 
-这是一个用于管理 `claw.163.com` 子邮箱的前后端项目。它可以在网页里创建/删除邮箱、查看收件、发送邮件、回复邮件，并通过 Docker 部署。
+基于 `claw.163.com` 的 **子邮箱批量管理 / 实时收发** 一体化前后端。
+通过 Web UI 验证码登录 Claw，自动派生 Dashboard Cookie 与 API Key，为每个子邮箱维持长连接监听，新邮件实时入库并经 SSE 推送给前端，可在线发件、回复、删除（远端 + 本地双删）、下载附件。
 
-## 功能范围
+仓库结构：
 
-- Claw 连接：在网页里输入 Claw 登录邮箱，验证码确认后自动保存 Dashboard Cookie 和 API Key。
-- 创建邮箱：调用 Claw Dashboard 内部接口创建 `vercel.<suffix>@claw.163.com`。
-- 删除邮箱：调用 Claw Dashboard 内部接口删除指定邮箱。
-- 收信：使用 `@clawemail/node-sdk` 为每个已管理邮箱建立 WebSocket 监听，新邮件落库到 SQLite，并用 SSE 通知前端刷新。
-- 发信：使用 `@clawemail/node-sdk` 从已管理邮箱发出邮件。
-- 回复：基于本地已保存邮件的 Claw 原始邮件 ID 调用 SDK 回复。
-- 附件：本地保存附件元数据，下载时再通过 SDK 拉取附件流。
+```text
+src/
+  server/                Fastify 5 后端（SQLite + Claw SDK + Dashboard 内部接口）
+    config.ts            环境变量解析（zod）
+    db.ts                better-sqlite3 schema 与 DAO
+    runtime-config.ts    运行时凭据（优先读 SQLite，再回退 .env）
+    claw-dashboard.ts    Claw Dashboard 内部 HTTP 接口封装
+    claw-mail.ts         @clawemail/node-sdk 客户端池 + 发件/回信/删信/列表
+    listener-manager.ts  每邮箱 WS 长连接 + 指数退避重连
+    sse.ts               SSE 广播总线
+    routes/              auth / mailboxes / mails / send / events
+    index.ts             Fastify 启动 + 静态托管前端
+  web/                   Vite 7 + React 19 单页应用
+    src/App.tsx          主壳：登录/路由/连接卡/工具栏
+    src/api.ts           前端调用层（统一 X-Admin-Password / ?token=）
+    src/i18n.tsx         中英双语 + 暗亮主题
+    src/components/      InboxView / MailboxesView / ComposeDrawer / ListenersDrawer / ListenersView
+    src/hooks.ts         可拖拽栏宽（localStorage 持久化）
+```
 
-## 已确认的 Claw 接口
+## 1. 功能矩阵
 
-Dashboard 接口只能放在后端调用，不能暴露 Cookie 到浏览器。
+| 模块 | 能力 | 实现位置 |
+|---|---|---|
+| Claw 绑定 | 邮箱 + 验证码两步登录；自动取 `auth/me` / `workspaces` / `mailboxes` / `api-keys`；写入 SQLite | `routes/claw-auth.ts`、`runtime-config.ts` |
+| 邮箱管理 | 创建（前缀 `^[a-z0-9]{1,32}$`）、列表、`?sync=true` 与远端做差量同步、删除（拒绝删主邮箱） | `routes/mailboxes.ts`、`claw-dashboard.ts` |
+| 实时收件 | 每个 `active` 邮箱一条 WS 监听；落库为 `mails` + `attachments`；SSE `event: mail` 推送 | `listener-manager.ts`、`sse.ts` |
+| 收件同步 | `GET /api/mails?sync=true`：远端 INBOX `id` 列表 → 删本地多余、补本地缺失 | `routes/mails.ts` |
+| 邮件详情 | 返回行 + 解析后的原始 JSON + 附件元数据 | `routes/mails.ts` |
+| 删信 | SDK `moveMessages([id], "Trash")` 远端删除 + 本地行删除 | `claw-mail.ts`、`routes/mails.ts` |
+| 发件 | 仅允许 `from` 是本地已管理邮箱 | `routes/send.ts` |
+| 回信 | 基于本地 `mailId` 反查 `provider_mail_id` 调 SDK | `routes/send.ts` |
+| 附件下载 | 不缓存原始字节，按需经 SDK 流式拉取 | `routes/mails.ts` |
+| 监听器诊断 | `/api/listeners` 输出 `email/connected/retry`；前端有侧栏摘要 + 抽屉详情 | `routes/events.ts`、`ListenersDrawer.tsx` |
+| 前端体验 | 中英双语、暗亮主题、拖拽栏宽（侧边栏 / 邮件列表）、登录态 localStorage 记忆 | `i18n.tsx`、`hooks.ts` |
+
+## 2. Claw 验证码登录链
+
+不收集任何 Claw 密码。`POST /api/auth/claw/verify-code` 内部串联以下接口：
 
 ```http
-POST https://claw.163.com/mailserv-claw-dashboard/api/v1/mailboxes
-Content-Type: application/json
-Cookie: <CLAW_DASHBOARD_COOKIE>
+POST https://claw.163.com/mailserv-claw-dashboard/p/v1/auth/email/send-code
+POST https://claw.163.com/mailserv-claw-dashboard/p/v1/auth/email/verify-code   → Set-Cookie: CLAW_SESS
+GET  https://claw.163.com/mailserv-claw-dashboard/api/v1/auth/me
+GET  https://claw.163.com/mailserv-claw-dashboard/api/v1/workspaces
+GET  https://claw.163.com/mailserv-claw-dashboard/api/v1/mailboxes?workspaceId=<id>
+GET  https://claw.163.com/mailserv-claw-dashboard/api/v1/api-keys
 ```
 
-```json
-{
-  "prefix": "3",
-  "displayName": "3",
-  "mailboxType": "sub",
-  "workspaceId": "XnVvZknr",
-  "parentMailboxId": "3L85M1qk"
-}
+落库（SQLite `app_settings` 表）：
+
+```text
+claw.apiKey
+claw.dashboardCookie
+claw.userEmail
+claw.workspaceId / claw.workspaceName
+claw.parentMailboxId
+claw.rootPrefix
+claw.domain
 ```
 
-```http
-POST https://claw.163.com/mailserv-claw-dashboard/api/v1/mailboxes/delete?id=<mailboxId>
-Cookie: <CLAW_DASHBOARD_COOKIE>
-```
+`workspace` 取 `status=active`，`apiKey` 取 `defaultFlag=1` 优先。
+绑定成功后会先 `stopAllMailboxListeners()` + `resetMailClients()` 再用新凭据 `startAllMailboxListeners()`，避免旧连接残留。
 
-```http
-GET https://claw.163.com/mailserv-claw-dashboard/api/v1/mailboxes?workspaceId=XnVvZknr
-Cookie: <CLAW_DASHBOARD_COOKIE>
-```
+## 3. Dashboard 内部接口（仅后端调用）
 
-## 本项目 API
+| 用途 | 方法 / 路径 |
+|---|---|
+| 列出工作区下的邮箱树 | `GET /api/v1/mailboxes?workspaceId=<id>` |
+| 创建子邮箱 | `POST /api/v1/mailboxes`（`{prefix, displayName, mailboxType:"sub", workspaceId, parentMailboxId}`） |
+| 删除邮箱 | `POST /api/v1/mailboxes/delete?id=<mailboxId>` |
 
-所有 `/api/*` 请求需要鉴权：
+返回壳为 `{code, message, success, result}`，由 `parseDashboardResponse` 统一解包。
+
+## 4. 本项目 HTTP API
+
+### 4.1 鉴权
+
+所有 `/api/*` 必须带：
 
 ```http
 X-Admin-Password: <ADMIN_PASSWORD>
 ```
 
-SSE 和附件下载这种浏览器不方便带 Header 的请求使用：
+浏览器无法自定义头的场景（SSE、附件 `<a href>`）改用：
 
 ```http
 ?token=<ADMIN_PASSWORD>
 ```
 
-接口列表：
+`X-Admin-Password` 与 `query.token` 命中其一即放行（见 `src/server/index.ts: extractAdminPassword`）。
+
+### 4.2 端点清单
 
 ```http
-GET /api/mailboxes
-GET /api/mailboxes?sync=true
-POST /api/mailboxes
+GET    /health
+GET    /api/auth/claw/status
+POST   /api/auth/claw/send-code
+POST   /api/auth/claw/verify-code
+POST   /api/auth/claw/refresh
+POST   /api/auth/claw/logout
+
+GET    /api/mailboxes                # 仅本地
+GET    /api/mailboxes?sync=true      # 与 Claw 做差量同步后再返回
+POST   /api/mailboxes                # { suffix }
 DELETE /api/mailboxes/:id
-GET /api/mails?mailbox=<email>&limit=50&offset=0
-GET /api/mails/:id
-GET /api/mails/:id/attachments/:partId
-POST /api/send
-POST /api/reply
-GET /api/events
-GET /api/listeners
-GET /health
+
+GET    /api/mails?mailbox=&limit=50&offset=0
+GET    /api/mails?sync=true&mailbox=...      # 远端 INBOX 全量比对
+GET    /api/mails/:id                        # 详情 + 解析后 JSON + 附件元数据
+DELETE /api/mails/:id                        # 远端移到 Trash + 本地删除
+GET    /api/mails/:id/attachments/:partId    # 流式下载附件
+
+POST   /api/send                              # { from, to[], cc?, bcc?, subject?, body?, html? }
+POST   /api/reply                             # { mailId, body?, html?, toAll? }
+
+GET    /api/events                            # SSE: event: mail
+GET    /api/listeners
 ```
 
-创建邮箱：
+请求样例：
 
-```json
-{
-  "suffix": "4"
-}
-```
+```jsonc
+// POST /api/mailboxes
+{ "suffix": "4" }
 
-发送邮件：
-
-```json
+// POST /api/send
 {
   "from": "vercel.4@claw.163.com",
   "to": ["target@example.com"],
+  "cc": ["copy@example.com"],
   "subject": "hello",
   "body": "message body",
   "html": false
 }
+
+// POST /api/reply
+{ "mailId": 123, "body": "reply body", "toAll": false, "html": false }
 ```
 
-回复邮件：
-
-```json
-{
-  "mailId": 1,
-  "body": "reply body",
-  "html": false,
-  "toAll": false
-}
-```
-
-## Claw 网页登录
-
-这个项目不做第三方密码采集。连接 Claw 使用官方邮箱验证码接口：
-
-```http
-POST https://claw.163.com/mailserv-claw-dashboard/p/v1/auth/email/send-code
-POST https://claw.163.com/mailserv-claw-dashboard/p/v1/auth/email/verify-code
-```
-
-登录成功后，后端会从响应头提取 `CLAW_SESS`，再自动调用：
-
-```http
-GET https://claw.163.com/mailserv-claw-dashboard/api/v1/auth/me
-GET https://claw.163.com/mailserv-claw-dashboard/api/v1/workspaces
-GET https://claw.163.com/mailserv-claw-dashboard/api/v1/mailboxes?workspaceId=<workspaceId>
-GET https://claw.163.com/mailserv-claw-dashboard/api/v1/api-keys
-```
-
-自动保存的信息：
+SSE 事件：
 
 ```text
-Dashboard Cookie
-API Key
-workspaceId
-parentMailboxId
-rootPrefix
-domain
+event: mail
+data: {"mailboxEmail":"vercel.4@claw.163.com","id":42,"providerMailId":"..."}
 ```
 
-这些值保存在 SQLite 的 `app_settings` 表，不会写进前端代码。
+校验：所有入参经 zod 解析；失败返回 `400 {error:"invalid input", details:[...]}`。
 
-## 环境变量
+## 5. 数据持久化
 
-复制 `.env.example` 为 `.env`，填入真实值。
+SQLite 文件由 `DATABASE_PATH` 指定（默认 `./data/app.db`），开启 `journal_mode=WAL` + `foreign_keys=ON`。
+
+```text
+mailboxes      子邮箱：id / email(unique) / prefix / status / install_command / auth_url ...
+mails          邮件：mailbox_email + provider_mail_id 联合唯一，含 raw_json 全文
+attachments    附件元数据：mail_id 外键 → mails.id（ON DELETE CASCADE）
+app_settings   key/value，存 Claw 凭据
+```
+
+附件二进制**不入库**，下载时调 `client.mail.getAttachment` 流式回传给浏览器。
+
+## 6. 监听器与重连
+
+`src/server/listener-manager.ts`：
+
+- 启动条件：邮箱 `status === "active"` 且 `hasClawMailConfig()` 为真
+- 退避序列：`[1, 2, 4, 8, 16, 30]` 秒
+- `client.ws.onMessage` 收到 mailId → `client.mail.read({markRead:true})` → `saveMail` → SSE `mail` 广播
+- `client.ws.onDisconnect` 触发 `scheduleReconnect`
+- 删邮箱、断开 Claw 时会显式 `stopMailboxListener` 关闭 WS
+
+`/api/listeners` 当前返回字段：`{ email, connected, retry }`。前端 `ListenersDrawer` 同时兼容了未来可能扩展的 `status / startedAt / lastEventAt / error` 字段。
+
+## 7. 环境变量
 
 ```env
 NODE_ENV=production
 PORT=3000
 ADMIN_PASSWORD=change-me
 
+# 以下变量是"兜底值"，验证码登录成功后会被 SQLite 中的值覆盖
 CLAW_API_KEY=
 CLAW_DASHBOARD_COOKIE=
-CLAW_WORKSPACE_ID=XnVvZknr
-CLAW_PARENT_MAILBOX_ID=3L85M1qk
-CLAW_ROOT_PREFIX=vercel
+CLAW_WORKSPACE_ID=
+CLAW_PARENT_MAILBOX_ID=
+CLAW_ROOT_PREFIX=
 CLAW_DOMAIN=claw.163.com
 
-DATABASE_PATH=/app/data/app.db
+DATABASE_PATH=./data/app.db
 ```
 
-说明：
+读取顺序（`runtime-config.ts`）：`SQLite app_settings` → `process.env`，缺一则 API 报 `... is required; connect Claw first`。
 
-- `CLAW_API_KEY`：可选兜底值。网页连接 Claw 后会自动保存。
-- `CLAW_DASHBOARD_COOKIE`：可选兜底值。网页连接 Claw 后会自动保存。
-- `ADMIN_PASSWORD`：网页和 API 的简单管理密码，生产环境必须改强密码。
-- `DATABASE_PATH`：Docker 推荐 `/app/data/app.db`，本地运行可改成 `./data/app.db`。
-
-## 本地运行
+## 8. 本地运行
 
 ```powershell
 npm install
 npm run build
 npm start
+# http://localhost:3000
 ```
 
-访问：
-
-```text
-http://localhost:3000
-```
-
-开发模式可开两个终端：
+开发：
 
 ```powershell
-npm run dev
+npm run dev          # tsx 跑后端，监听 :3000
+npm run dev:web      # Vite 跑前端，监听 :5173
+npm run typecheck    # tsc --noEmit
 ```
 
-```powershell
-npm run dev:web
-```
+`npm run build` = `vite build` 产出静态资源到 `dist/web` + `esbuild` 打包后端到 `dist/server/index.js`，`@clawemail/node-sdk`、`fastify`、`better-sqlite3` 等保持 external。
 
-前端开发地址：
-
-```text
-http://localhost:5173
-```
-
-## Docker 部署
+## 9. Docker 部署
 
 ```powershell
 docker compose up -d --build
-```
-
-检查服务：
-
-```powershell
 docker compose ps
 curl http://localhost:3000/health
 ```
 
-数据文件保存在：
+`docker-compose.yml` 把 `./data` 挂到 `/app/data`，确保 SQLite 持久化。Dockerfile 使用 `node:22-bookworm-slim` 多阶段构建，需要 `python3 / make / g++` 来编译 `better-sqlite3` native binding。
 
-```text
-./data/app.db
-```
+## 10. 安全边界
 
-## 安全边界
+- `ADMIN_PASSWORD` 是轻量密码门，不是用户体系；公网部署请放在 Cloudflare Access / Nginx 鉴权后。
+- `CLAW_API_KEY` 与 `CLAW_DASHBOARD_COOKIE` 仅存于服务端 SQLite 与 `.env`，**不会暴露到前端 bundle**；浏览器只持有 `ADMIN_PASSWORD`。
+- `?token=` 与 Header 等价，注意 SSE / 附件链接会出现在浏览器历史和服务器日志中。
+- Claw Dashboard `/api/v1/...` 是网页内部接口，路径或字段变化时需重新抓包并更新 `claw-dashboard.ts`。
+- 删除邮件依赖 SDK 的内部 `transport.moveMessages`；同步邮箱依赖 `transport.listMessages`。SDK 升级若隐藏这些字段，会得到 `Remote mail deletion is not supported by the installed Claw SDK` 这类错误，需要适配。
 
-- 不要把 `CLAW_API_KEY` 和 `CLAW_DASHBOARD_COOKIE` 写进前端代码。
-- 不要把 `.env` 提交到 Git。
-- 这个项目的 `ADMIN_PASSWORD` 是轻量保护，不等于完整用户体系；如果暴露公网，建议放到 Nginx/Cloudflare Access/Zero Trust 后面。
-- Claw Dashboard 接口是网页内部接口，后续可能变化；如果 Claw 改接口路径或字段，需要重新抓包确认。
+## 致谢
+
+感谢 [Linux.do](https://linux.do) 社区。

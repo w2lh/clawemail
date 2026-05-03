@@ -10,7 +10,7 @@ import {
   type ClawMailbox
 } from "../claw-dashboard";
 import { resetMailClients } from "../claw-mail";
-import { upsertMailbox } from "../db";
+import { markMailboxesMissingDeleted, upsertMailbox } from "../db";
 import { startAllMailboxListeners, stopAllMailboxListeners } from "../listener-manager";
 import {
   clearClawAuthSettings,
@@ -52,6 +52,7 @@ function saveMailboxes(mailboxes: ClawMailbox[]): void {
       authUrl: item.authUrl
     });
   }
+  markMailboxesMissingDeleted(mailboxes.map((item) => item.email));
 }
 
 async function connectWithCookie(cookie: string) {

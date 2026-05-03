@@ -133,6 +133,16 @@ export function upsertMailbox(input: {
       install_command = excluded.install_command,
       auth_url = excluded.auth_url,
       updated_at = CURRENT_TIMESTAMP
+    ON CONFLICT(email) DO UPDATE SET
+      id = excluded.id,
+      prefix = excluded.prefix,
+      display_name = excluded.display_name,
+      account_id = excluded.account_id,
+      status = excluded.status,
+      openclaw_status = excluded.openclaw_status,
+      install_command = excluded.install_command,
+      auth_url = excluded.auth_url,
+      updated_at = CURRENT_TIMESTAMP
   `).run({
     ...input,
     status: input.status ?? "active",
@@ -166,6 +176,19 @@ export function getMailboxByEmail(email: string): MailboxRow | undefined {
 
 export function markMailboxDeleted(id: string): void {
   db.prepare("UPDATE mailboxes SET status = 'deleted', updated_at = CURRENT_TIMESTAMP WHERE id = ?").run(id);
+}
+
+export function markMailboxesMissingDeleted(remoteEmails: string[]): MailboxRow[] {
+  const remoteEmailSet = new Set(remoteEmails.map((email) => email.trim().toLowerCase()));
+  const missing = listActiveMailboxes().filter((mailbox) => !remoteEmailSet.has(mailbox.email.toLowerCase()));
+  const transaction = db.transaction(() => {
+    const statement = db.prepare("UPDATE mailboxes SET status = 'deleted', updated_at = CURRENT_TIMESTAMP WHERE id = ?");
+    for (const mailbox of missing) {
+      statement.run(mailbox.id);
+    }
+  });
+  transaction();
+  return missing;
 }
 
 export function saveMail(input: {
@@ -256,8 +279,37 @@ export function listMails(input: {
   return { items, count: count.count };
 }
 
+export function listMailProviderIds(mailboxEmail: string): string[] {
+  const rows = db.prepare("SELECT provider_mail_id FROM mails WHERE mailbox_email = ?")
+    .all(mailboxEmail) as Array<{ provider_mail_id: string }>;
+  return rows.map((row) => row.provider_mail_id);
+}
+
 export function getMailById(id: number): MailRow | undefined {
   return db.prepare("SELECT * FROM mails WHERE id = ?").get(id) as MailRow | undefined;
+}
+
+export function getMailByProviderId(mailboxEmail: string, providerMailId: string): MailRow | undefined {
+  return db.prepare("SELECT * FROM mails WHERE mailbox_email = ? AND provider_mail_id = ?")
+    .get(mailboxEmail, providerMailId) as MailRow | undefined;
+}
+
+export function deleteMailById(id: number): boolean {
+  const result = db.prepare("DELETE FROM mails WHERE id = ?").run(id);
+  return result.changes > 0;
+}
+
+export function deleteMailsByProviderIds(mailboxEmail: string, providerMailIds: string[]): number {
+  if (providerMailIds.length === 0) return 0;
+  const transaction = db.transaction(() => {
+    const statement = db.prepare("DELETE FROM mails WHERE mailbox_email = ? AND provider_mail_id = ?");
+    let count = 0;
+    for (const providerMailId of providerMailIds) {
+      count += statement.run(mailboxEmail, providerMailId).changes;
+    }
+    return count;
+  });
+  return transaction();
 }
 
 export function listAttachments(mailId: number): AttachmentRow[] {

@@ -7,9 +7,9 @@ const envSchema = z.object({
   ADMIN_PASSWORD: z.string().min(1).default("change-me"),
   CLAW_API_KEY: z.string().optional(),
   CLAW_DASHBOARD_COOKIE: z.string().optional(),
-  CLAW_WORKSPACE_ID: z.string().default("XnVvZknr"),
-  CLAW_PARENT_MAILBOX_ID: z.string().default("3L85M1qk"),
-  CLAW_ROOT_PREFIX: z.string().default("vercel"),
+  CLAW_WORKSPACE_ID: z.string().optional(),
+  CLAW_PARENT_MAILBOX_ID: z.string().optional(),
+  CLAW_ROOT_PREFIX: z.string().optional(),
   CLAW_DOMAIN: z.string().default("claw.163.com"),
   DATABASE_PATH: z.string().default("./data/app.db")
 });
@@ -39,6 +39,9 @@ export function normalizeMailboxEmail(value: string): string {
 }
 
 export function suffixToEmail(suffix: string): string {
+  if (!config.CLAW_ROOT_PREFIX) {
+    throw new Error("CLAW_ROOT_PREFIX is required to format mailbox addresses");
+  }
   const root = config.CLAW_ROOT_PREFIX.trim().toLowerCase();
   return `${root}.${suffix}@${config.CLAW_DOMAIN}`;
 }

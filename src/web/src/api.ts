@@ -43,13 +43,21 @@ export type ClawAuthStatus = {
   hasApiKey: boolean;
   hasDashboardCookie: boolean;
   userEmail: string | null;
-  workspaceId: string;
+  workspaceId: string | null;
   workspaceName: string | null;
-  parentMailboxId: string;
-  rootPrefix: string;
-  domain: string;
+  parentMailboxId: string | null;
+  rootPrefix: string | null;
+  domain: string | null;
   apiKeyPrefix: string | null;
   apiKeySuffix: string | null;
+};
+
+export type ListenerSnapshot = {
+  email: string;
+  status: string;
+  startedAt?: string | null;
+  lastEventAt?: string | null;
+  error?: string | null;
 };
 
 let adminPassword = localStorage.getItem("adminPassword") ?? "";
@@ -60,17 +68,27 @@ export function getAdminPassword() {
 
 export function setAdminPassword(value: string) {
   adminPassword = value;
-  localStorage.setItem("adminPassword", value);
+  if (value) {
+    localStorage.setItem("adminPassword", value);
+  } else {
+    localStorage.removeItem("adminPassword");
+  }
 }
 
-async function requestJson<T>(path: string, init: RequestInit = {}): Promise<T> {
+async function requestJson<T>(
+  path: string,
+  init: RequestInit = {},
+  adminPasswordOverride = adminPassword
+): Promise<T> {
+  const headers = new Headers(init.headers);
+  headers.set("x-admin-password", adminPasswordOverride);
+  if (init.body !== undefined && !headers.has("content-type")) {
+    headers.set("content-type", "application/json");
+  }
+
   const response = await fetch(path, {
     ...init,
-    headers: {
-      "content-type": "application/json",
-      "x-admin-password": adminPassword,
-      ...(init.headers ?? {})
-    }
+    headers
   });
   const text = await response.text();
   const data = text ? JSON.parse(text) : null;
@@ -78,6 +96,10 @@ async function requestJson<T>(path: string, init: RequestInit = {}): Promise<T> 
     throw new Error(data?.error ?? `HTTP ${response.status}`);
   }
   return data as T;
+}
+
+export async function verifyAdminPassword(value: string): Promise<ClawAuthStatus> {
+  return requestJson<ClawAuthStatus>("/api/auth/claw/status", {}, value);
 }
 
 export async function fetchMailboxes(sync = false): Promise<Mailbox[]> {
@@ -98,9 +120,15 @@ export async function deleteMailbox(id: string): Promise<void> {
   });
 }
 
-export async function fetchMails(mailbox?: string): Promise<{ items: MailSummary[]; count: number }> {
-  const params = new URLSearchParams({ limit: "50", offset: "0" });
+export async function fetchMails(
+  mailbox?: string,
+  limit = 50,
+  offset = 0,
+  sync = false
+): Promise<{ items: MailSummary[]; count: number }> {
+  const params = new URLSearchParams({ limit: String(limit), offset: String(offset) });
   if (mailbox) params.set("mailbox", mailbox);
+  if (sync) params.set("sync", "true");
   return requestJson(`/api/mails?${params.toString()}`);
 }
 
@@ -108,25 +136,37 @@ export async function fetchMail(id: number): Promise<MailDetail> {
   return requestJson(`/api/mails/${id}`);
 }
 
-export async function sendMail(input: {
+export async function deleteMail(id: number): Promise<void> {
+  await requestJson<{ success: boolean }>(`/api/mails/${id}`, {
+    method: "DELETE"
+  });
+}
+
+export type SendMailInput = {
   from: string;
   to: string[];
+  cc?: string[];
+  bcc?: string[];
   subject?: string;
   body?: string;
   html?: boolean;
-}) {
+};
+
+export async function sendMail(input: SendMailInput) {
   return requestJson<{ status: "sent" }>("/api/send", {
     method: "POST",
     body: JSON.stringify(input)
   });
 }
 
-export async function replyMail(input: {
+export type ReplyMailInput = {
   mailId: number;
   body?: string;
   html?: boolean;
   toAll?: boolean;
-}) {
+};
+
+export async function replyMail(input: ReplyMailInput) {
   return requestJson<{ status: "sent" }>("/api/reply", {
     method: "POST",
     body: JSON.stringify(input)
@@ -171,4 +211,9 @@ export async function disconnectClaw(): Promise<ClawAuthStatus> {
   return requestJson("/api/auth/claw/logout", {
     method: "POST"
   });
+}
+
+export async function fetchListeners(): Promise<ListenerSnapshot[]> {
+  const data = await requestJson<{ items: ListenerSnapshot[] }>("/api/listeners");
+  return data.items;
 }

@@ -1,0 +1,12 @@
+.git
+.github
+.codex-run
+.claude
+.spec-workflow
+node_modules
+dist
+data
+npm-debug.log*
+.env
+.env.*
+!.env.example

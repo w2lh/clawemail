@@ -1,65 +1,159 @@
 import { useEffect, useMemo, useState } from "react";
+import { ComposeDrawer } from "./components/ComposeDrawer";
+import { InboxView } from "./components/InboxView";
+import { ListenersDrawer } from "./components/ListenersDrawer";
+import { MailboxesView } from "./components/MailboxesView";
+import { useResizableWidth } from "./hooks";
+import { PrefsBar, usePrefs } from "./i18n";
 import {
   createEventSource,
   createMailbox,
   deleteMailbox,
   disconnectClaw,
   fetchClawAuthStatus,
+  fetchListeners,
   fetchMail,
   fetchMailboxes,
   fetchMails,
   getAdminPassword,
   refreshClawConnection,
-  replyMail,
-  sendMail,
   sendClawLoginCode,
   setAdminPassword,
+  verifyAdminPassword,
   verifyClawLoginCode,
   type ClawAuthStatus,
+  type ListenerSnapshot,
   type MailDetail,
   type MailSummary,
   type Mailbox
 } from "./api";
 
 type View = "mailboxes" | "inbox";
+const VIEW_STORAGE_KEY = "claw.currentView";
 
-function splitRecipients(value: string): string[] {
-  return value.split(/[,\n;]/).map((item) => item.trim()).filter(Boolean);
+const VIEW_KEYS: Record<View, { eyebrow: string; title: string; subtitle: string }> = {
+  mailboxes: {
+    eyebrow: "view.mailboxes.eyebrow",
+    title: "view.mailboxes.title",
+    subtitle: "view.mailboxes.subtitle"
+  },
+  inbox: {
+    eyebrow: "view.inbox.eyebrow",
+    title: "view.inbox.title",
+    subtitle: "view.inbox.subtitle"
+  }
+};
+
+const LIVE_LISTENER_STATUSES = new Set(["running", "open"]);
+
+function readInitialView(): View {
+  if (typeof localStorage === "undefined") return "mailboxes";
+  const saved = localStorage.getItem(VIEW_STORAGE_KEY);
+  return saved === "inbox" || saved === "mailboxes" ? saved : "mailboxes";
 }
 
 export function App() {
-  const [password, setPassword] = useState(getAdminPassword());
-  const [view, setView] = useState<View>("mailboxes");
+  const { t } = usePrefs();
+
+  const initialAdminPassword = getAdminPassword();
+  const [password, setPassword] = useState("");
+  const [loginInput, setLoginInput] = useState(initialAdminPassword);
+  const [loginError, setLoginError] = useState("");
+  const [loginBusy, setLoginBusy] = useState(Boolean(initialAdminPassword));
+
+  const [view, setView] = useState<View>(readInitialView);
   const [mailboxes, setMailboxes] = useState<Mailbox[]>([]);
   const [selectedMailbox, setSelectedMailbox] = useState("");
   const [mails, setMails] = useState<MailSummary[]>([]);
   const [selectedMail, setSelectedMail] = useState<MailDetail | null>(null);
+
   const [status, setStatus] = useState("");
   const [error, setError] = useState("");
+
   const [suffix, setSuffix] = useState("");
-  const [sendOpen, setSendOpen] = useState(false);
-  const [sendTo, setSendTo] = useState("");
-  const [sendSubject, setSendSubject] = useState("");
-  const [sendBody, setSendBody] = useState("");
-  const [replyBody, setReplyBody] = useState("");
+  const [mailboxSyncBusy, setMailboxSyncBusy] = useState(false);
+  const [composeOpen, setComposeOpen] = useState(false);
+
   const [clawAuth, setClawAuth] = useState<ClawAuthStatus | null>(null);
   const [clawLoginEmail, setClawLoginEmail] = useState("");
   const [clawLoginCode, setClawLoginCode] = useState("");
   const [clawCodeSent, setClawCodeSent] = useState(false);
   const [clawBusy, setClawBusy] = useState(false);
+  const [connectionDetailsOpen, setConnectionDetailsOpen] = useState(false);
+
+  const [listenerItems, setListenerItems] = useState<ListenerSnapshot[]>([]);
+  const [listenerBusy, setListenerBusy] = useState(false);
+  const [listenersDrawerOpen, setListenersDrawerOpen] = useState(false);
+
+  const rail = useResizableWidth({
+    storageKey: "rail.width",
+    initial: 280,
+    min: 220,
+    max: 480
+  });
 
   const activeMailboxes = useMemo(
     () => mailboxes.filter((mailbox) => mailbox.status !== "deleted"),
     [mailboxes]
   );
 
-  async function loadMailboxes(sync = false) {
+  const listenerSummary = useMemo(() => {
+    let running = 0;
+    let errors = 0;
+    for (const item of listenerItems) {
+      if (LIVE_LISTENER_STATUSES.has(item.status)) running++;
+      if (item.status === "error" || item.error) errors++;
+    }
+    return { running, total: listenerItems.length, errors };
+  }, [listenerItems]);
+
+  function reportError(err: unknown) {
+    setError(err instanceof Error ? err.message : String(err));
+  }
+
+  function formatLoginError(err: unknown): string {
+    const message = err instanceof Error ? err.message : String(err);
+    return message === "unauthorized" ? t("login.error.unauthorized") : message;
+  }
+
+  async function handleLogin(nextPassword = loginInput) {
+    if (!nextPassword) return;
+    setLoginBusy(true);
+    setLoginError("");
+    try {
+      const data = await verifyAdminPassword(nextPassword);
+      setAdminPassword(nextPassword);
+      setPassword(nextPassword);
+      setClawAuth(data);
+      setError("");
+    } catch (err) {
+      const loginMessage = formatLoginError(err);
+      setAdminPassword("");
+      setPassword("");
+      setLoginError(loginMessage);
+      if (loginMessage === t("login.error.unauthorized")) {
+        setLoginInput("");
+      }
+    } finally {
+      setLoginBusy(false);
+    }
+  }
+
+  useEffect(() => {
+    const savedPassword = getAdminPassword();
+    if (!savedPassword) return;
+    handleLogin(savedPassword);
+  }, []);
+
+  useEffect(() => {
+    localStorage.setItem(VIEW_STORAGE_KEY, view);
+  }, [view]);
+
+  async function loadMailboxes(sync = false): Promise<Mailbox[]> {
     setError("");
     const items = await fetchMailboxes(sync);
     setMailboxes(items);
-    if (!selectedMailbox && items[0]) {
-      setSelectedMailbox(items[0].email);
-    }
+    return items;
   }
 
   async function loadClawAuthStatus() {
@@ -67,411 +161,527 @@ export function App() {
     setClawAuth(data);
   }
 
-  async function loadMails(mailbox = selectedMailbox) {
-    if (!mailbox) return;
+  async function loadMails(mailbox = selectedMailbox, sync = false) {
     setError("");
-    const data = await fetchMails(mailbox);
+    const data = await fetchMails(mailbox || undefined, 50, 0, sync);
     setMails(data.items);
+    if (selectedMail && !data.items.some((mail) => mail.id === selectedMail.id)) {
+      setSelectedMail(null);
+    }
   }
 
   async function loadMail(id: number) {
     setError("");
     const detail = await fetchMail(id);
     setSelectedMail(detail);
-    setReplyBody("");
+  }
+
+  async function loadListeners() {
+    setListenerBusy(true);
+    try {
+      const data = await fetchListeners();
+      setListenerItems(data);
+    } catch (err) {
+      reportError(err);
+    } finally {
+      setListenerBusy(false);
+    }
   }
 
   useEffect(() => {
     if (!password) return;
     setAdminPassword(password);
-    loadClawAuthStatus().catch((err) => setError(err.message));
-    loadMailboxes().catch((err) => setError(err.message));
+    loadClawAuthStatus().catch(reportError);
+    loadMailboxes().catch(reportError);
   }, [password]);
+
+  useEffect(() => {
+    if (!status) return;
+    const timer = window.setTimeout(() => {
+      setStatus("");
+    }, 5000);
+    return () => window.clearTimeout(timer);
+  }, [status]);
 
   useEffect(() => {
     if (!password) return;
     const events = createEventSource();
     events.addEventListener("mail", () => {
-      loadMails().catch((err) => setError(err.message));
+      loadMails().catch(reportError);
     });
     events.onerror = () => {
-      setStatus("实时连接断开，稍后会自动重连");
+      setStatus(t("flash.events.reconnecting"));
     };
     return () => events.close();
   }, [password, selectedMailbox]);
 
   useEffect(() => {
-    if (!selectedMailbox) return;
-    loadMails(selectedMailbox).catch((err) => setError(err.message));
-  }, [selectedMailbox]);
+    if (!password) return;
+    setSelectedMail(null);
+    loadMails(selectedMailbox, true).catch(reportError);
+  }, [password, selectedMailbox]);
+
+  // Auto-fetch listener summary once Claw is connected, and again on demand
+  // when the connection details panel is opened.
+  useEffect(() => {
+    if (!password) return;
+    if (!clawAuth?.connected) {
+      setListenerItems([]);
+      return;
+    }
+    loadListeners();
+  }, [password, clawAuth?.connected]);
+
+  useEffect(() => {
+    if (!connectionDetailsOpen) return;
+    if (!clawAuth?.connected) return;
+    loadListeners();
+  }, [connectionDetailsOpen]);
 
   async function handleCreateMailbox() {
-    setStatus("");
-    setError("");
+    setStatus(""); setError("");
     try {
       const created = await createMailbox(suffix);
       setSuffix("");
-      setStatus(`已创建 ${created.email}`);
+      setStatus(t("flash.mb.created", { email: created.email }));
       await loadMailboxes();
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
-    }
-  }
-
-  async function handleSendClawCode() {
-    setStatus("");
-    setError("");
-    setClawBusy(true);
-    try {
-      await sendClawLoginCode(clawLoginEmail.trim());
-      setClawCodeSent(true);
-      setStatus("验证码已发送");
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
-    } finally {
-      setClawBusy(false);
-    }
-  }
-
-  async function handleVerifyClawCode() {
-    setStatus("");
-    setError("");
-    setClawBusy(true);
-    try {
-      const result = await verifyClawLoginCode(clawLoginEmail.trim(), clawLoginCode.trim());
-      setClawAuth(result.auth);
-      setClawLoginCode("");
-      setStatus(`Claw 已连接，同步 ${result.syncedMailboxes} 个邮箱`);
-      await loadMailboxes();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
-    } finally {
-      setClawBusy(false);
-    }
-  }
-
-  async function handleRefreshClaw() {
-    setStatus("");
-    setError("");
-    setClawBusy(true);
-    try {
-      const result = await refreshClawConnection();
-      setClawAuth(result.auth);
-      setStatus(`连接已刷新，同步 ${result.syncedMailboxes} 个邮箱`);
-      await loadMailboxes();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
-    } finally {
-      setClawBusy(false);
-    }
-  }
-
-  async function handleDisconnectClaw() {
-    if (!confirm("确认断开 Claw 连接？")) return;
-    setStatus("");
-    setError("");
-    setClawBusy(true);
-    try {
-      const result = await disconnectClaw();
-      setClawAuth(result);
-      setStatus("Claw 连接已断开");
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
-    } finally {
-      setClawBusy(false);
+      reportError(err);
     }
   }
 
   async function handleDeleteMailbox(mailbox: Mailbox) {
-    if (!confirm(`确认删除 ${mailbox.email}？`)) return;
-    setStatus("");
-    setError("");
+    if (!confirm(t("mb.confirm.delete", { email: mailbox.email }))) return;
+    setStatus(""); setError("");
     try {
       await deleteMailbox(mailbox.id);
-      setStatus(`已删除 ${mailbox.email}`);
+      setStatus(t("flash.mb.deleted", { email: mailbox.email }));
       await loadMailboxes();
       if (selectedMailbox === mailbox.email) {
         setSelectedMailbox("");
         setMails([]);
       }
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      reportError(err);
     }
   }
 
-  function isPrimaryMailbox(mailbox: Mailbox): boolean {
-    if (!clawAuth) return false;
-    return mailbox.id === clawAuth.parentMailboxId ||
-      mailbox.email === `${clawAuth.rootPrefix}@${clawAuth.domain}`;
+  async function handleSendClawCode() {
+    setStatus(""); setError(""); setClawBusy(true);
+    try {
+      await sendClawLoginCode(clawLoginEmail.trim());
+      setClawCodeSent(true);
+      setStatus(t("flash.code.sent"));
+    } catch (err) {
+      reportError(err);
+    } finally {
+      setClawBusy(false);
+    }
   }
 
-  async function handleSend() {
+  async function handleVerifyClawCode() {
+    setStatus(""); setError(""); setClawBusy(true);
+    try {
+      const result = await verifyClawLoginCode(clawLoginEmail.trim(), clawLoginCode.trim());
+      setClawAuth(result.auth);
+      setClawLoginCode("");
+      setClawCodeSent(false);
+      setStatus(t("flash.claw.bound", { n: result.syncedMailboxes }));
+      await loadMailboxes();
+    } catch (err) {
+      reportError(err);
+    } finally {
+      setClawBusy(false);
+    }
+  }
+
+  async function handleRefreshClaw() {
+    setStatus(""); setError(""); setClawBusy(true);
+    try {
+      const result = await refreshClawConnection();
+      setClawAuth(result.auth);
+      setStatus(t("flash.claw.refreshed", { n: result.syncedMailboxes }));
+      await loadMailboxes();
+      loadListeners();
+    } catch (err) {
+      reportError(err);
+    } finally {
+      setClawBusy(false);
+    }
+  }
+
+  async function handleSyncMailboxes() {
+    setStatus(t("flash.mb.syncing"));
+    setError("");
+    setMailboxSyncBusy(true);
+    try {
+      const items = await loadMailboxes(true);
+      setStatus(t("flash.mb.synced", {
+        n: items.filter((mailbox) => mailbox.status !== "deleted").length
+      }));
+      loadListeners();
+    } catch (err) {
+      reportError(err);
+    } finally {
+      setMailboxSyncBusy(false);
+    }
+  }
+
+  async function handleDisconnectClaw() {
+    if (!confirm(t("confirm.disconnect"))) return;
+    setStatus(""); setError(""); setClawBusy(true);
+    try {
+      const result = await disconnectClaw();
+      setClawAuth(result);
+      setConnectionDetailsOpen(false);
+      setListenerItems([]);
+      setStatus(t("flash.claw.severed"));
+    } catch (err) {
+      reportError(err);
+    } finally {
+      setClawBusy(false);
+    }
+  }
+
+  function handleLogout() {
+    setAdminPassword("");
+    setPassword("");
+    setLoginInput("");
+    setLoginError("");
+    setClawAuth(null);
+    setConnectionDetailsOpen(false);
+    setListenerItems([]);
+    setListenersDrawerOpen(false);
+    setMailboxes([]);
+    setSelectedMailbox("");
+    setMails([]);
+    setSelectedMail(null);
     setStatus("");
     setError("");
-    try {
-      await sendMail({
-        from: selectedMailbox,
-        to: splitRecipients(sendTo),
-        subject: sendSubject,
-        body: sendBody
-      });
-      setSendOpen(false);
-      setSendTo("");
-      setSendSubject("");
-      setSendBody("");
-      setStatus("邮件已发送");
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
-    }
   }
 
-  async function handleReply() {
-    if (!selectedMail) return;
-    setStatus("");
-    setError("");
-    try {
-      await replyMail({ mailId: selectedMail.id, body: replyBody });
-      setReplyBody("");
-      setStatus("回复已发送");
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
-    }
-  }
+  // ---------- LOGIN ----------
 
   if (!password) {
+    const stamp = new Date()
+      .toLocaleString("sv-SE", { timeZone: "Asia/Shanghai", hour12: false })
+      .slice(0, 19);
     return (
       <main className="login-shell">
-        <section className="login-panel">
-          <h1>Claw Email Manager</h1>
-          <p>输入后端管理密码后开始管理邮箱。</p>
-          <input
-            type="password"
-            placeholder="ADMIN_PASSWORD"
-            onKeyDown={(event) => {
-              if (event.key === "Enter") {
-                setPassword((event.currentTarget as HTMLInputElement).value);
-              }
-            }}
-          />
-          <button onClick={() => {
-            const input = document.querySelector<HTMLInputElement>(".login-panel input");
-            setPassword(input?.value ?? "");
-          }}>进入</button>
+        <PrefsBar variant="login" />
+        <section className="stage">
+          <div className="brand-row">
+            <span className="mark">claw</span>
+            <span>· {t("brand.tagline")}</span>
+            <span style={{ color: "var(--text-4)" }}>v0.1</span>
+          </div>
+          <div className="pitch">
+            <h1>
+              {t("login.headline.1")}<br />
+              {t("login.headline.2")}<br />
+              <span className="lime">{t("login.headline.3")}</span>
+            </h1>
+            <p>{t("login.pitch")}</p>
+          </div>
+          <div className="stamp">
+            {t("login.stamp.session")} · {stamp} utc+8
+            <span style={{ marginLeft: 14, color: "var(--accent-fg)" }}>● {t("login.stamp.online")}</span>
+          </div>
+        </section>
+
+        <section className="login-form">
+          <div className="head">
+            <span className="eyebrow">{t("login.eyebrow")}</span>
+            <h2>{t("login.title")}</h2>
+          </div>
+          <div className="field">
+            <label>{t("login.field.password")}</label>
+            <input
+              type="password"
+              autoFocus
+              value={loginInput}
+              placeholder={t("login.placeholder.password")}
+              disabled={loginBusy}
+              onChange={(event) => {
+                setLoginInput(event.target.value);
+                setLoginError("");
+              }}
+              onKeyDown={(event) => { if (event.key === "Enter") handleLogin(); }}
+            />
+          </div>
+          <div className="actions">
+            <button
+              className="primary"
+              onClick={() => handleLogin()}
+              disabled={loginBusy || !loginInput}
+            >
+              {loginBusy ? t("login.btn.verifying") : t("login.btn.enter")}
+            </button>
+            <span className="kbd">⏎</span>
+          </div>
+          {loginError && <div className="err" style={{ marginTop: 18 }}>{loginError}</div>}
         </section>
       </main>
     );
   }
 
+  // ---------- MAIN SHELL ----------
+
+  const meta = VIEW_KEYS[view];
+  const summaryHasErrors = listenerSummary.errors > 0;
+  const summaryAllLive =
+    listenerSummary.total > 0 && listenerSummary.running === listenerSummary.total;
+
   return (
-    <main className="app-shell">
-      <aside className="sidebar">
+    <main
+      className="app-shell"
+      style={{ ["--rail-width" as string]: `${rail.width}px` }}
+    >
+      <aside className="rail">
+        <div
+          className={`rail-resizer ${rail.dragging ? "dragging" : ""}`}
+          onPointerDown={rail.onPointerDown}
+          role="separator"
+          aria-orientation="vertical"
+          aria-label="resize sidebar"
+        />
         <div className="brand">
-          <span className="mark">CE</span>
-          <div>
-            <strong>Claw Email</strong>
-            <small>Mailbox Control</small>
-          </div>
+          <span className="word">claw<span style={{ color: "var(--accent-fg)" }}>.</span></span>
+          <span className="ver">{t("rail.brand.suffix")}</span>
         </div>
+
         <nav>
-          <button className={view === "mailboxes" ? "active" : ""} onClick={() => setView("mailboxes")}>邮箱管理</button>
-          <button className={view === "inbox" ? "active" : ""} onClick={() => setView("inbox")}>收件箱</button>
+          <div className="eyebrow nav-eyebrow">{t("rail.workspace")}</div>
+          <button className={view === "inbox" ? "active" : ""} onClick={() => setView("inbox")}>
+            <span className="glyph">▣</span>
+            <span>{t("rail.nav.inbox")}</span>
+            <span className="count">{mails.length || ""}</span>
+          </button>
+          <button className={view === "mailboxes" ? "active" : ""} onClick={() => setView("mailboxes")}>
+            <span className="glyph">⬚</span>
+            <span>{t("rail.nav.mailboxes")}</span>
+            <span className="count">{activeMailboxes.length}</span>
+          </button>
         </nav>
-        <div className="sidebar-footer">
-          <button onClick={() => {
-            setAdminPassword("");
-            setPassword("");
-          }}>退出</button>
-        </div>
-      </aside>
 
-      <section className="workspace">
-        <header className="topbar">
-          <div>
-            <h1>{view === "mailboxes" ? "邮箱管理" : "收件箱"}</h1>
-            <p>{view === "mailboxes" ? "创建和删除 Claw 子邮箱" : "查看新邮件、发送和回复"}</p>
-          </div>
-          <div className="topbar-actions">
-            <select value={selectedMailbox} onChange={(event) => setSelectedMailbox(event.target.value)}>
-              <option value="">选择邮箱</option>
-              {activeMailboxes.map((mailbox) => (
-                <option key={mailbox.id} value={mailbox.email}>{mailbox.email}</option>
-              ))}
-            </select>
-            <button onClick={() => setSendOpen(true)} disabled={!selectedMailbox || !clawAuth?.hasApiKey}>写信</button>
-            <button onClick={() => loadMailboxes(true).catch((err) => setError(err.message))} disabled={!clawAuth?.hasDashboardCookie}>同步</button>
-          </div>
-        </header>
-
-        {status && <div className="notice">{status}</div>}
-        {error && <div className="error">{error}</div>}
-
-        <section className={`connection-panel ${clawAuth?.connected ? "connected" : ""}`}>
-          <div>
-            <strong>{clawAuth?.connected ? "Claw 已连接" : "连接 Claw"}</strong>
-            <small>
-              {clawAuth?.connected
-                ? `${clawAuth.userEmail ?? "Claw account"} · ${clawAuth.workspaceName ?? clawAuth.workspaceId}`
-                : "使用 Claw 邮箱验证码自动获取 Cookie 和 API Key"}
-            </small>
+        <div className={`conn-card ${clawAuth?.connected ? "connected" : "disconnected"}`}>
+          <div className="head">
+            <strong>{t("conn.title")}</strong>
+            <span className="status">
+              <span className={`dot ${clawAuth?.connected ? "live" : "warn"}`} />
+              {clawAuth?.connected ? t("conn.bound") : t("conn.idle")}
+            </span>
           </div>
           {clawAuth?.connected ? (
-            <div className="connection-actions">
-              <span className="mono">
-                {clawAuth.apiKeyPrefix}***{clawAuth.apiKeySuffix}
-              </span>
-              <span>{clawAuth.rootPrefix}@{clawAuth.domain}</span>
-              <button onClick={handleRefreshClaw} disabled={clawBusy}>刷新连接</button>
-              <button className="danger" onClick={handleDisconnectClaw} disabled={clawBusy}>断开</button>
-            </div>
+            <>
+              <div className="actions">
+                <button onClick={handleRefreshClaw} disabled={clawBusy}>{t("conn.action.refresh")}</button>
+                <button className="danger" onClick={handleDisconnectClaw} disabled={clawBusy}>{t("conn.action.disconnect")}</button>
+                <button
+                  className="ghost details-toggle"
+                  onClick={() => setConnectionDetailsOpen((open) => !open)}
+                  aria-expanded={connectionDetailsOpen}
+                >
+                  {connectionDetailsOpen ? t("conn.action.hideDetails") : t("conn.action.showDetails")}
+                </button>
+              </div>
+              {connectionDetailsOpen && (
+                <div className="details">
+                  <div className="body">
+                    <span className="key">{t("conn.field.user")}</span>
+                    <span className="val">{clawAuth.userEmail ?? "—"}</span>
+                    <span className="key">{t("conn.field.workspace")}</span>
+                    <span className="val">{clawAuth.workspaceName ?? clawAuth.workspaceId}</span>
+                    <span className="key">{t("conn.field.root")}</span>
+                    <span className="val">
+                      {clawAuth.rootPrefix && clawAuth.domain
+                        ? `${clawAuth.rootPrefix}@${clawAuth.domain}`
+                        : "—"}
+                    </span>
+                    <span className="key">{t("conn.field.apikey")}</span>
+                    <span className="val">{clawAuth.apiKeyPrefix}···{clawAuth.apiKeySuffix}</span>
+                  </div>
+
+                  <div className="lis-summary">
+                    <div className="lis-summary-row">
+                      <span className="lis-label">{t("conn.lis.label")}</span>
+                      {listenerSummary.total === 0 && !listenerBusy ? (
+                        <span className="lis-empty">{t("conn.lis.empty")}</span>
+                      ) : (
+                        <span className="lis-stats">
+                          <span className={`lis-running ${summaryAllLive ? "ok" : ""}`}>
+                            {t("conn.lis.running", {
+                              n: listenerSummary.running,
+                              total: listenerSummary.total
+                            })}
+                          </span>
+                          <span className="lis-sep">·</span>
+                          <span className={`lis-errors ${summaryHasErrors ? "err" : "muted"}`}>
+                            {t("conn.lis.errors", { n: listenerSummary.errors })}
+                          </span>
+                        </span>
+                      )}
+                    </div>
+                    <button
+                      type="button"
+                      className="ghost diag-btn"
+                      onClick={() => {
+                        setListenersDrawerOpen(true);
+                        loadListeners();
+                      }}
+                    >
+                      {t("conn.action.diagnostics")}
+                    </button>
+                  </div>
+                </div>
+              )}
+            </>
           ) : (
-            <div className="connection-form">
+            <div className="form">
               <input
                 type="email"
                 value={clawLoginEmail}
                 onChange={(event) => setClawLoginEmail(event.target.value)}
-                placeholder="Claw 登录邮箱"
+                placeholder={t("conn.input.email")}
+                disabled={clawBusy}
               />
               {clawCodeSent && (
                 <input
                   value={clawLoginCode}
                   onChange={(event) => setClawLoginCode(event.target.value.replace(/\D/g, ""))}
-                  placeholder="验证码"
+                  placeholder={t("conn.input.code")}
+                  disabled={clawBusy}
                 />
               )}
-              <button onClick={handleSendClawCode} disabled={clawBusy || !clawLoginEmail}>发送验证码</button>
-              <button onClick={handleVerifyClawCode} disabled={clawBusy || !clawCodeSent || !clawLoginCode}>连接</button>
+              <div className="actions">
+                <button onClick={handleSendClawCode} disabled={clawBusy || !clawLoginEmail}>
+                  {clawCodeSent ? t("conn.action.resendCode") : t("conn.action.sendCode")}
+                </button>
+                {clawCodeSent && (
+                  <button
+                    className="primary"
+                    onClick={handleVerifyClawCode}
+                    disabled={clawBusy || !clawLoginCode}
+                  >
+                    {t("conn.action.bind")}
+                  </button>
+                )}
+              </div>
             </div>
           )}
-        </section>
+        </div>
+
+        <PrefsBar variant="rail" />
+
+        <div className="footer-row">
+          <span>{t("rail.admin")}</span>
+          <button className="ghost" onClick={handleLogout}>{t("rail.logout")}</button>
+        </div>
+      </aside>
+
+      <section className="work">
+        <header className="work-head">
+          <div className="meta">
+            <div className="row">
+              <span>{t(meta.eyebrow)}</span>
+            </div>
+            <h1 className="h-display">
+              {t(meta.title)}<span className="pt">.</span>
+            </h1>
+            <p className="subtitle">{t(meta.subtitle)}</p>
+          </div>
+          <div className="actions">
+            <select
+              value={selectedMailbox}
+              onChange={(event) => setSelectedMailbox(event.target.value)}
+            >
+              <option value="">{t("toolbar.selectMailbox")}</option>
+              {activeMailboxes.map((mailbox) => (
+                <option key={mailbox.id} value={mailbox.email}>{mailbox.email}</option>
+              ))}
+            </select>
+            {view === "inbox" && (
+              <button
+                className="primary"
+                onClick={() => setComposeOpen(true)}
+                disabled={!selectedMailbox || !clawAuth?.hasApiKey}
+              >
+                {t("toolbar.compose")}
+              </button>
+            )}
+            {view === "mailboxes" && (
+              <button
+                className={`sync-btn ${mailboxSyncBusy ? "syncing" : ""}`}
+                onClick={handleSyncMailboxes}
+                disabled={!clawAuth?.hasDashboardCookie || mailboxSyncBusy}
+                title={t("toolbar.syncHint")}
+                aria-busy={mailboxSyncBusy}
+              >
+                <span className="sync-icon" aria-hidden="true">↻</span>
+                <span>{mailboxSyncBusy ? t("toolbar.syncing") : t("toolbar.sync")}</span>
+              </button>
+            )}
+          </div>
+        </header>
+
+        <div className="divider-ascii">· · · · · · · · · · · · · · · · · · · · · · · · · · · · · · · · · · · · · · · · · · ·</div>
+
+        {(status || error) && (
+          <div className="flash-line">
+            {status && <div className="notice">{status}</div>}
+            {error && <div className="err">{error}</div>}
+          </div>
+        )}
 
         {view === "mailboxes" && (
-          <section className="panel">
-            <div className="create-row">
-              <span>{clawAuth?.rootPrefix ?? "vercel"}.</span>
-              <input
-                value={suffix}
-                onChange={(event) => setSuffix(event.target.value.toLowerCase().replace(/[^a-z0-9]/g, ""))}
-                placeholder="4"
-              />
-              <span>@{clawAuth?.domain ?? "claw.163.com"}</span>
-              <button onClick={handleCreateMailbox} disabled={!suffix || !clawAuth?.hasDashboardCookie}>创建邮箱</button>
-            </div>
-            <table>
-              <thead>
-                <tr>
-                  <th>邮箱</th>
-                  <th>状态</th>
-                  <th>Auth URL</th>
-                  <th>创建时间</th>
-                  <th>操作</th>
-                </tr>
-              </thead>
-              <tbody>
-                {activeMailboxes.map((mailbox) => (
-                  <tr key={mailbox.id}>
-                    <td>{mailbox.email}</td>
-                    <td>{mailbox.status}</td>
-                    <td className="mono">{mailbox.auth_url ?? "-"}</td>
-                    <td>{mailbox.created_at}</td>
-                    <td>
-                      <button onClick={() => {
-                        setSelectedMailbox(mailbox.email);
-                        setView("inbox");
-                      }}>打开</button>
-                      <button
-                        className="danger"
-                        onClick={() => handleDeleteMailbox(mailbox)}
-                        disabled={isPrimaryMailbox(mailbox)}
-                      >
-                        删除
-                      </button>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </section>
+          <MailboxesView
+            mailboxes={activeMailboxes}
+            clawAuth={clawAuth}
+            suffix={suffix}
+            setSuffix={setSuffix}
+            onCreate={handleCreateMailbox}
+            onDelete={handleDeleteMailbox}
+            onOpen={(mailbox) => {
+              setSelectedMailbox(mailbox.email);
+              setView("inbox");
+            }}
+          />
         )}
 
         {view === "inbox" && (
-          <section className="inbox-layout">
-            <div className="mail-list">
-              <div className="section-title">
-                <strong>{selectedMailbox || "未选择邮箱"}</strong>
-                <button onClick={() => loadMails().catch((err) => setError(err.message))} disabled={!selectedMailbox}>刷新</button>
-              </div>
-              {mails.map((mail) => (
-                <button
-                  key={mail.id}
-                  className={`mail-row ${selectedMail?.id === mail.id ? "selected" : ""}`}
-                  onClick={() => loadMail(mail.id).catch((err) => setError(err.message))}
-                >
-                  <span>{mail.subject || "(无主题)"}</span>
-                  <small>{mail.source || "unknown sender"}</small>
-                </button>
-              ))}
-              {mails.length === 0 && <div className="empty">暂无邮件</div>}
-            </div>
-
-            <article className="mail-detail">
-              {!selectedMail && <div className="empty">选择左侧邮件查看详情</div>}
-              {selectedMail && (
-                <>
-                  <h2>{selectedMail.subject || "(无主题)"}</h2>
-                  <dl>
-                    <dt>From</dt>
-                    <dd>{selectedMail.source || "-"}</dd>
-                    <dt>To</dt>
-                    <dd>{selectedMail.address || selectedMail.mailbox_email}</dd>
-                    <dt>Time</dt>
-                    <dd>{selectedMail.received_at || selectedMail.created_at}</dd>
-                  </dl>
-                  <div className="body-view">
-                    {selectedMail.html ? (
-                      <iframe title="mail-html" srcDoc={selectedMail.html} />
-                    ) : (
-                      <pre>{selectedMail.text || ""}</pre>
-                    )}
-                  </div>
-                  {selectedMail.attachments.length > 0 && (
-                    <div className="attachments">
-                      <strong>附件</strong>
-                      {selectedMail.attachments.map((item) => (
-                        <a
-                          key={item.id}
-                          href={`/api/mails/${selectedMail.id}/attachments/${encodeURIComponent(item.provider_part_id)}?token=${encodeURIComponent(password)}`}
-                        >
-                          {item.filename || item.provider_part_id}
-                        </a>
-                      ))}
-                    </div>
-                  )}
-                  <div className="reply-box">
-                    <textarea value={replyBody} onChange={(event) => setReplyBody(event.target.value)} placeholder="回复内容" />
-                    <button onClick={handleReply} disabled={!replyBody}>回复</button>
-                  </div>
-                </>
-              )}
-            </article>
-          </section>
+          <InboxView
+            selectedMailbox={selectedMailbox}
+            mails={mails}
+            selectedMail={selectedMail}
+            onSelectMail={(id) => loadMail(id).catch(reportError)}
+            onRefresh={() => loadMails(selectedMailbox, true).catch(reportError)}
+            onDeleted={(id, msg) => {
+              setMails((items) => items.filter((mail) => mail.id !== id));
+              setSelectedMail(null);
+              setStatus(msg);
+            }}
+            onReplied={(msg) => setStatus(msg)}
+            onError={reportError}
+            adminPassword={password}
+          />
         )}
       </section>
 
-      {sendOpen && (
-        <div className="modal-backdrop">
-          <section className="modal">
-            <h2>发送邮件</h2>
-            <label>发件邮箱<input value={selectedMailbox} readOnly /></label>
-            <label>收件人<textarea value={sendTo} onChange={(event) => setSendTo(event.target.value)} placeholder="a@example.com, b@example.com" /></label>
-            <label>主题<input value={sendSubject} onChange={(event) => setSendSubject(event.target.value)} /></label>
-            <label>正文<textarea value={sendBody} onChange={(event) => setSendBody(event.target.value)} /></label>
-            <div className="modal-actions">
-              <button onClick={handleSend} disabled={!selectedMailbox || splitRecipients(sendTo).length === 0}>发送</button>
-              <button onClick={() => setSendOpen(false)}>取消</button>
-            </div>
-          </section>
-        </div>
-      )}
+      <ComposeDrawer
+        open={composeOpen}
+        fromMailbox={selectedMailbox}
+        onClose={() => setComposeOpen(false)}
+        onSent={(msg) => setStatus(msg)}
+        onError={reportError}
+      />
+
+      <ListenersDrawer
+        open={listenersDrawerOpen}
+        busy={listenerBusy}
+        items={listenerItems}
+        onClose={() => setListenersDrawerOpen(false)}
+        onRefresh={loadListeners}
+      />
     </main>
   );
 }

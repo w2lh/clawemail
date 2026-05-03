@@ -37,19 +37,31 @@ export function requireDashboardCookie(): string {
 }
 
 export function getWorkspaceId(): string {
-  return getSetting("claw.workspaceId") ?? config.CLAW_WORKSPACE_ID;
+  const value = getStoredWorkspaceId();
+  if (!value) {
+    throw new Error("Claw workspace is not configured; connect Claw first");
+  }
+  return value;
 }
 
 export function getParentMailboxId(): string {
-  return getSetting("claw.parentMailboxId") ?? config.CLAW_PARENT_MAILBOX_ID;
+  const value = getStoredParentMailboxId();
+  if (!value) {
+    throw new Error("Claw parent mailbox is not configured; connect Claw first");
+  }
+  return value;
 }
 
 export function getRootPrefix(): string {
-  return getSetting("claw.rootPrefix") ?? config.CLAW_ROOT_PREFIX;
+  const value = getStoredRootPrefix();
+  if (!value) {
+    throw new Error("Claw root prefix is not configured; connect Claw first");
+  }
+  return value;
 }
 
 export function getDomain(): string {
-  return getSetting("claw.domain") ?? config.CLAW_DOMAIN;
+  return getStoredDomain();
 }
 
 export function hasClawMailConfig(): boolean {
@@ -60,19 +72,39 @@ export function hasClawDashboardConfig(): boolean {
   return Boolean(getDashboardCookie());
 }
 
+function getStoredWorkspaceId(): string | null {
+  return getSetting("claw.workspaceId") ?? config.CLAW_WORKSPACE_ID ?? null;
+}
+
+function getStoredParentMailboxId(): string | null {
+  return getSetting("claw.parentMailboxId") ?? config.CLAW_PARENT_MAILBOX_ID ?? null;
+}
+
+function getStoredRootPrefix(): string | null {
+  return getSetting("claw.rootPrefix") ?? config.CLAW_ROOT_PREFIX ?? null;
+}
+
+function getStoredDomain(): string {
+  return getSetting("claw.domain") ?? config.CLAW_DOMAIN;
+}
+
 export function getClawAuthStatus() {
   const apiKey = getClawApiKey();
   const cookie = getDashboardCookie();
+  const workspaceId = cookie ? getStoredWorkspaceId() : null;
+  const parentMailboxId = cookie ? getStoredParentMailboxId() : null;
+  const rootPrefix = cookie ? getStoredRootPrefix() : null;
+  const domain = cookie ? getStoredDomain() : null;
   return {
-    connected: Boolean(apiKey && cookie),
+    connected: Boolean(apiKey && cookie && workspaceId && parentMailboxId && rootPrefix && domain),
     hasApiKey: Boolean(apiKey),
     hasDashboardCookie: Boolean(cookie),
     userEmail: getSetting("claw.userEmail") ?? null,
-    workspaceId: getWorkspaceId(),
+    workspaceId,
     workspaceName: getSetting("claw.workspaceName") ?? null,
-    parentMailboxId: getParentMailboxId(),
-    rootPrefix: getRootPrefix(),
-    domain: getDomain(),
+    parentMailboxId,
+    rootPrefix,
+    domain,
     apiKeyPrefix: apiKey ? apiKey.slice(0, 10) : null,
     apiKeySuffix: apiKey ? apiKey.slice(-4) : null
   };

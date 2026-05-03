@@ -1,7 +1,7 @@
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { createMailbox, deleteMailbox, listDashboardMailboxes } from "../claw-dashboard";
-import { getMailboxById, listMailboxes, markMailboxDeleted, upsertMailbox } from "../db";
+import { getMailboxById, listMailboxes, markMailboxDeleted, markMailboxesMissingDeleted, upsertMailbox } from "../db";
 import { startMailboxListener, stopMailboxListener } from "../listener-manager";
 import { getParentMailboxId } from "../runtime-config";
 
@@ -26,6 +26,9 @@ export async function mailboxRoutes(app: FastifyInstance): Promise<void> {
           authUrl: item.authUrl
         });
         startMailboxListener(row);
+      }
+      for (const mailbox of markMailboxesMissingDeleted(remote.map((item) => item.email))) {
+        stopMailboxListener(mailbox.email);
       }
     }
     return { items: listMailboxes(false) };
