@@ -1,5 +1,6 @@
 import type { ClawAuthStatus, Mailbox } from "../api";
 import { usePrefs } from "../i18n";
+import { parseServerTime } from "../time";
 
 type Props = {
   mailboxes: Mailbox[];
@@ -9,11 +10,12 @@ type Props = {
   onCreate: () => void;
   onDelete: (mailbox: Mailbox) => void;
   onOpen: (mailbox: Mailbox) => void;
+  onConfigureRules: (mailbox: Mailbox) => void;
 };
 
 function relTime(value: string, t: (key: string, vars?: Record<string, string | number>) => string): string {
   if (!value) return "—";
-  const date = new Date(value.replace(" ", "T") + "Z");
+  const date = parseServerTime(value);
   if (Number.isNaN(date.getTime())) return value;
   const diff = Date.now() - date.getTime();
   const min = Math.round(diff / 60000);
@@ -25,6 +27,16 @@ function relTime(value: string, t: (key: string, vars?: Record<string, string | 
   return t("time.dAgo", { n: d });
 }
 
+function ruleLabel(mailbox: Mailbox, t: (key: string) => string): string {
+  if (mailbox.comm_level === 0) return t("mb.rules.personal");
+  if (mailbox.comm_level === 1) return t("mb.rules.internal");
+  if (mailbox.comm_level === 2 && mailbox.ext_receive_type === 1) {
+    return t("mb.rules.receiveAll");
+  }
+  if (mailbox.comm_level === 2) return t("mb.rules.external");
+  return t("mb.rules.unknown");
+}
+
 export function MailboxesView({
   mailboxes,
   clawAuth,
@@ -32,7 +44,8 @@ export function MailboxesView({
   setSuffix,
   onCreate,
   onDelete,
-  onOpen
+  onOpen,
+  onConfigureRules
 }: Props) {
   const { t } = usePrefs();
   const rootPrefix = clawAuth?.hasDashboardCookie ? clawAuth.rootPrefix : null;
@@ -89,6 +102,7 @@ export function MailboxesView({
           <div className="mb-row head">
             <span>{t("mb.head.mailbox")}</span>
             <span>{t("mb.head.status")}</span>
+            <span>{t("mb.head.rules")}</span>
             <span>{t("mb.head.created")}</span>
             <span style={{ textAlign: "right" }}>{t("mb.head.ops")}</span>
           </div>
@@ -108,9 +122,21 @@ export function MailboxesView({
                   {mailbox.status}
                 </span>
               </div>
+              <div>
+                <span className={`tag ${mailbox.comm_level === 2 && mailbox.ext_receive_type === 1 ? "ok" : "muted"}`}>
+                  <span className={`dot ${mailbox.comm_level === 2 && mailbox.ext_receive_type === 1 ? "live" : ""}`} />
+                  {ruleLabel(mailbox, t)}
+                </span>
+              </div>
               <div className="time-cell">{relTime(mailbox.created_at, t)}</div>
               <div className="ops">
                 <button onClick={() => onOpen(mailbox)}>{t("mb.row.open")}</button>
+                <button
+                  onClick={() => onConfigureRules(mailbox)}
+                  disabled={!clawAuth?.hasDashboardCookie}
+                >
+                  {t("mb.row.rules")}
+                </button>
                 <button
                   className="danger"
                   onClick={() => onDelete(mailbox)}

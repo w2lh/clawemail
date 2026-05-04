@@ -1,6 +1,7 @@
 import { useEffect } from "react";
 import type { ListenerSnapshot } from "../api";
 import { usePrefs } from "../i18n";
+import { parseServerTime } from "../time";
 
 type Props = {
   open: boolean;
@@ -12,7 +13,7 @@ type Props = {
 
 function fmt(value?: string | null): string {
   if (!value) return "—";
-  const date = new Date(value.replace(" ", "T") + "Z");
+  const date = parseServerTime(value);
   if (Number.isNaN(date.getTime())) return value;
   return date.toLocaleString();
 }

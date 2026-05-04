@@ -20,6 +20,9 @@ CREATE TABLE IF NOT EXISTS mailboxes (
   openclaw_status TEXT,
   install_command TEXT,
   auth_url TEXT,
+  comm_level INTEGER,
+  ext_receive_type INTEGER,
+  ext_send_type INTEGER,
   created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
@@ -67,6 +70,16 @@ CREATE TABLE IF NOT EXISTS app_settings (
 );
 `);
 
+function ensureColumn(table: string, column: string, definition: string): void {
+  const rows = db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>;
+  if (rows.some((row) => row.name === column)) return;
+  db.prepare(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`).run();
+}
+
+ensureColumn("mailboxes", "comm_level", "INTEGER");
+ensureColumn("mailboxes", "ext_receive_type", "INTEGER");
+ensureColumn("mailboxes", "ext_send_type", "INTEGER");
+
 export type MailboxRow = {
   id: string;
   email: string;
@@ -77,6 +90,9 @@ export type MailboxRow = {
   openclaw_status: string | null;
   install_command: string | null;
   auth_url: string | null;
+  comm_level: number | null;
+  ext_receive_type: number | null;
+  ext_send_type: number | null;
   created_at: string;
   updated_at: string;
 };
@@ -117,12 +133,21 @@ export function upsertMailbox(input: {
   openclawStatus?: string | null;
   installCommand?: string | null;
   authUrl?: string | null;
+  commLevel?: number | null;
+  extReceiveType?: number | null;
+  extSendType?: number | null;
 }): MailboxRow {
   db.prepare(`
     INSERT INTO mailboxes
-      (id, email, prefix, display_name, account_id, status, openclaw_status, install_command, auth_url)
+      (
+        id, email, prefix, display_name, account_id, status, openclaw_status,
+        install_command, auth_url, comm_level, ext_receive_type, ext_send_type
+      )
     VALUES
-      (@id, @email, @prefix, @displayName, @accountId, @status, @openclawStatus, @installCommand, @authUrl)
+      (
+        @id, @email, @prefix, @displayName, @accountId, @status, @openclawStatus,
+        @installCommand, @authUrl, @commLevel, @extReceiveType, @extSendType
+      )
     ON CONFLICT(id) DO UPDATE SET
       email = excluded.email,
       prefix = excluded.prefix,
@@ -132,6 +157,9 @@ export function upsertMailbox(input: {
       openclaw_status = excluded.openclaw_status,
       install_command = excluded.install_command,
       auth_url = excluded.auth_url,
+      comm_level = excluded.comm_level,
+      ext_receive_type = excluded.ext_receive_type,
+      ext_send_type = excluded.ext_send_type,
       updated_at = CURRENT_TIMESTAMP
     ON CONFLICT(email) DO UPDATE SET
       id = excluded.id,
@@ -142,6 +170,9 @@ export function upsertMailbox(input: {
       openclaw_status = excluded.openclaw_status,
       install_command = excluded.install_command,
       auth_url = excluded.auth_url,
+      comm_level = excluded.comm_level,
+      ext_receive_type = excluded.ext_receive_type,
+      ext_send_type = excluded.ext_send_type,
       updated_at = CURRENT_TIMESTAMP
   `).run({
     ...input,
@@ -150,7 +181,10 @@ export function upsertMailbox(input: {
     accountId: input.accountId ?? null,
     openclawStatus: input.openclawStatus ?? null,
     installCommand: input.installCommand ?? null,
-    authUrl: input.authUrl ?? null
+    authUrl: input.authUrl ?? null,
+    commLevel: input.commLevel ?? null,
+    extReceiveType: input.extReceiveType ?? null,
+    extSendType: input.extSendType ?? null
   });
   return getMailboxById(input.id)!;
 }
@@ -176,6 +210,28 @@ export function getMailboxByEmail(email: string): MailboxRow | undefined {
 
 export function markMailboxDeleted(id: string): void {
   db.prepare("UPDATE mailboxes SET status = 'deleted', updated_at = CURRENT_TIMESTAMP WHERE id = ?").run(id);
+}
+
+export function updateMailboxCommSettings(id: string, input: {
+  commLevel: number;
+  extReceiveType?: number | null;
+  extSendType?: number | null;
+}): MailboxRow | undefined {
+  db.prepare(`
+    UPDATE mailboxes
+    SET
+      comm_level = @commLevel,
+      ext_receive_type = @extReceiveType,
+      ext_send_type = @extSendType,
+      updated_at = CURRENT_TIMESTAMP
+    WHERE id = @id
+  `).run({
+    id,
+    commLevel: input.commLevel,
+    extReceiveType: input.extReceiveType ?? null,
+    extSendType: input.extSendType ?? null
+  });
+  return getMailboxById(id);
 }
 
 export function markMailboxesMissingDeleted(remoteEmails: string[]): MailboxRow[] {

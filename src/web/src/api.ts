@@ -8,6 +8,9 @@ export type Mailbox = {
   openclaw_status: string | null;
   install_command: string | null;
   auth_url: string | null;
+  comm_level: number | null;
+  ext_receive_type: number | null;
+  ext_send_type: number | null;
   created_at: string;
   updated_at: string;
 };
@@ -117,6 +120,22 @@ export async function createMailbox(suffix: string): Promise<Mailbox> {
 export async function deleteMailbox(id: string): Promise<void> {
   await requestJson<{ success: boolean }>(`/api/mailboxes/${encodeURIComponent(id)}`, {
     method: "DELETE"
+  });
+}
+
+export type CommunicationSettingsInput = {
+  commLevel: 0 | 1 | 2;
+  extReceiveType?: 0 | 1;
+  extSendType?: 0 | 1;
+};
+
+export async function updateMailboxCommunicationSettings(
+  id: string,
+  input: CommunicationSettingsInput
+): Promise<Mailbox> {
+  return requestJson<Mailbox>(`/api/mailboxes/${encodeURIComponent(id)}/comm-settings`, {
+    method: "POST",
+    body: JSON.stringify(input)
   });
 }
 

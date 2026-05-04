@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import { CommunicationRulesDrawer } from "./components/CommunicationRulesDrawer";
 import { ComposeDrawer } from "./components/ComposeDrawer";
 import { InboxView } from "./components/InboxView";
 import { ListenersDrawer } from "./components/ListenersDrawer";
@@ -72,6 +73,7 @@ export function App() {
 
   const [suffix, setSuffix] = useState("");
   const [mailboxSyncBusy, setMailboxSyncBusy] = useState(false);
+  const [rulesMailbox, setRulesMailbox] = useState<Mailbox | null>(null);
   const [composeOpen, setComposeOpen] = useState(false);
 
   const [clawAuth, setClawAuth] = useState<ClawAuthStatus | null>(null);
@@ -352,6 +354,7 @@ export function App() {
     setConnectionDetailsOpen(false);
     setListenerItems([]);
     setListenersDrawerOpen(false);
+    setRulesMailbox(null);
     setMailboxes([]);
     setSelectedMailbox("");
     setMails([]);
@@ -645,6 +648,7 @@ export function App() {
               setSelectedMailbox(mailbox.email);
               setView("inbox");
             }}
+            onConfigureRules={(mailbox) => setRulesMailbox(mailbox)}
           />
         )}
 
@@ -672,6 +676,18 @@ export function App() {
         fromMailbox={selectedMailbox}
         onClose={() => setComposeOpen(false)}
         onSent={(msg) => setStatus(msg)}
+        onError={reportError}
+      />
+
+      <CommunicationRulesDrawer
+        open={Boolean(rulesMailbox)}
+        mailbox={rulesMailbox}
+        onClose={() => setRulesMailbox(null)}
+        onSaved={(updated, msg) => {
+          setMailboxes((items) => items.map((item) => item.id === updated.id ? updated : item));
+          setRulesMailbox(null);
+          setStatus(msg);
+        }}
         onError={reportError}
       />
 

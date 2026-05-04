@@ -2,6 +2,7 @@ import { useState } from "react";
 import { deleteMail, replyMail, type MailDetail, type MailSummary } from "../api";
 import { useResizableWidth } from "../hooks";
 import { plural, usePrefs } from "../i18n";
+import { parseServerTime } from "../time";
 
 type Props = {
   selectedMailbox: string;
@@ -17,7 +18,7 @@ type Props = {
 
 function fmtTime(value: string | null): string {
   if (!value) return "—";
-  const date = new Date(value.replace(" ", "T") + "Z");
+  const date = parseServerTime(value);
   if (Number.isNaN(date.getTime())) return value;
   const today = new Date();
   const sameDay = date.toDateString() === today.toDateString();
@@ -29,7 +30,7 @@ function fmtTime(value: string | null): string {
 
 function fmtFull(value: string | null): string {
   if (!value) return "—";
-  const date = new Date(value.replace(" ", "T") + "Z");
+  const date = parseServerTime(value);
   if (Number.isNaN(date.getTime())) return value;
   return date.toLocaleString();
 }

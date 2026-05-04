@@ -49,7 +49,10 @@ function saveMailboxes(mailboxes: ClawMailbox[]): void {
       status: item.status ?? "active",
       openclawStatus: item.openclawStatus,
       installCommand: item.installCommand,
-      authUrl: item.authUrl
+      authUrl: item.authUrl,
+      commLevel: item.commLevel,
+      extReceiveType: item.extReceiveType,
+      extSendType: item.extSendType
     });
   }
   markMailboxesMissingDeleted(mailboxes.map((item) => item.email));

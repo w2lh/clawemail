@@ -10,6 +10,9 @@ export type ClawMailbox = {
   openclawStatus?: string | null;
   installCommand?: string | null;
   authUrl?: string | null;
+  commLevel?: number | null;
+  extReceiveType?: number | null;
+  extSendType?: number | null;
   createdAt?: string | null;
 };
 
@@ -61,6 +64,14 @@ function extractAuthUrl(command?: string | null): string | null {
   return match?.[1] ?? null;
 }
 
+function optionalNumber(value: unknown): number | null {
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  if (typeof value === "string" && value.trim() !== "" && Number.isFinite(Number(value))) {
+    return Number(value);
+  }
+  return null;
+}
+
 function normalizeMailbox(raw: any): ClawMailbox {
   return {
     id: String(raw.id),
@@ -72,6 +83,9 @@ function normalizeMailbox(raw: any): ClawMailbox {
     openclawStatus: raw.openclawStatus ?? null,
     installCommand: raw.installCommand ?? null,
     authUrl: extractAuthUrl(raw.installCommand),
+    commLevel: optionalNumber(raw.commLevel),
+    extReceiveType: optionalNumber(raw.extReceiveType),
+    extSendType: optionalNumber(raw.extSendType),
     createdAt: raw.createdAt ?? null
   };
 }
@@ -217,6 +231,22 @@ export async function deleteMailbox(id: string): Promise<void> {
       accept: "application/json, text/plain, */*",
       cookie: requireDashboardCookie()
     }
+  });
+  await parseDashboardResponse<null>(response);
+}
+
+export async function updateMailboxCommunicationSettings(
+  id: string,
+  input: {
+    commLevel: number;
+    extReceiveType?: number;
+    extSendType?: number;
+  }
+): Promise<void> {
+  const response = await fetch(`${BASE_URL}/mailboxes/comm-settings?id=${encodeURIComponent(id)}`, {
+    method: "POST",
+    headers: getHeaders(),
+    body: JSON.stringify(input)
   });
   await parseDashboardResponse<null>(response);
 }

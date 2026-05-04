@@ -31,6 +31,7 @@ src/
 |---|---|---|
 | Claw 绑定 | 邮箱 + 验证码两步登录；自动取 `auth/me` / `workspaces` / `mailboxes` / `api-keys`；写入 SQLite | `routes/claw-auth.ts`、`runtime-config.ts` |
 | 邮箱管理 | 创建（前缀 `^[a-z0-9]{1,32}$`）、列表、`?sync=true` 与远端做差量同步、删除（拒绝删主邮箱） | `routes/mailboxes.ts`、`claw-dashboard.ts` |
+| 通讯规则 | 同步并保存 `commLevel` / `extReceiveType` / `extSendType`；邮箱页可配置个人 / 内部 / 外部通信范围 | `routes/mailboxes.ts`、`CommunicationRulesDrawer.tsx` |
 | 实时收件 | 每个 `active` 邮箱一条 WS 监听；落库为 `mails` + `attachments`；SSE `event: mail` 推送 | `listener-manager.ts`、`sse.ts` |
 | 收件同步 | `GET /api/mails?sync=true`：远端 INBOX `id` 列表 → 删本地多余、补本地缺失 | `routes/mails.ts` |
 | 邮件详情 | 返回行 + 解析后的原始 JSON + 附件元数据 | `routes/mails.ts` |
@@ -75,6 +76,7 @@ claw.domain
 |---|---|
 | 列出工作区下的邮箱树 | `GET /api/v1/mailboxes?workspaceId=<id>` |
 | 创建子邮箱 | `POST /api/v1/mailboxes`（`{prefix, displayName, mailboxType:"sub", workspaceId, parentMailboxId}`） |
+| 配置通讯规则 | `POST /api/v1/mailboxes/comm-settings?id=<mailboxId>`（`{commLevel, extReceiveType?, extSendType?}`） |
 | 删除邮箱 | `POST /api/v1/mailboxes/delete?id=<mailboxId>` |
 
 返回壳为 `{code, message, success, result}`，由 `parseDashboardResponse` 统一解包。
@@ -110,6 +112,7 @@ POST   /api/auth/claw/logout
 GET    /api/mailboxes                # 仅本地
 GET    /api/mailboxes?sync=true      # 与 Claw 做差量同步后再返回
 POST   /api/mailboxes                # { suffix }
+POST   /api/mailboxes/:id/comm-settings      # { commLevel, extReceiveType?, extSendType? }
 DELETE /api/mailboxes/:id
 
 GET    /api/mails?mailbox=&limit=50&offset=0
@@ -159,7 +162,7 @@ data: {"mailboxEmail":"vercel.4@claw.163.com","id":42,"providerMailId":"..."}
 SQLite 文件由 `DATABASE_PATH` 指定（默认 `./data/app.db`），开启 `journal_mode=WAL` + `foreign_keys=ON`。
 
 ```text
-mailboxes      子邮箱：id / email(unique) / prefix / status / install_command / auth_url ...
+mailboxes      子邮箱：id / email(unique) / prefix / status / install_command / auth_url / comm_level ...
 mails          邮件：mailbox_email + provider_mail_id 联合唯一，含 raw_json 全文
 attachments    附件元数据：mail_id 外键 → mails.id（ON DELETE CASCADE）
 app_settings   key/value，存 Claw 凭据
