@@ -8,7 +8,7 @@
     "dev:web": "vite --config src/web/vite.config.ts --host 0.0.0.0",
     "build": "vite build --config src/web/vite.config.ts && esbuild src/server/index.ts --bundle --platform=node --target=node22 --format=esm --outfile=dist/server/index.js --packages=external",
     "build:cloudflare": "vite build --config src/web/vite.config.ts",
-    "deploy": "npm run build:cloudflare && npm run cf:migrate && npx wrangler deploy",
+    "deploy": "npm run build:cloudflare && npx wrangler deploy",
     "cf:deploy": "npm run deploy",
     "cf:migrate": "npx wrangler d1 migrations apply DB --remote",
     "start": "node dist/server/index.js",

@@ -23,6 +23,7 @@ import {
 import {
   deleteMailById,
   deleteMailsByProviderIds,
+  ensureSchema,
   getMailboxByEmail,
   getMailboxById,
   getMailById,
@@ -565,6 +566,7 @@ async function handleApi(request: Request, env: Env, url: URL): Promise<Response
   if (!matched) return error("not found", 404);
 
   try {
+    await ensureSchema(env.DB);
     return await matched.route.handler({
       request,
       env,

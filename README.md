@@ -270,7 +270,7 @@ wrangler.toml
 - D1 替代本地 SQLite 文件；不需要自建服务器或挂载磁盘。
 - 附件仍然不入库，下载时从 Claw 远端按需转发。
 
-一键部署会跳转到 Cloudflare，由 Cloudflare 克隆本仓库到你的 GitHub/GitLab 账号、创建 Workers Builds 项目，并按 `wrangler.toml` 自动准备 D1 绑定。部署过程中需要填写 `ADMIN_PASSWORD`。
+一键部署会跳转到 Cloudflare，由 Cloudflare 克隆本仓库到你的 GitHub/GitLab 账号、创建 Workers Builds 项目，并按 `wrangler.toml` 自动准备 D1 绑定。部署过程中需要填写 `ADMIN_PASSWORD`。D1 表结构会在首次访问 `/api/*` 时自动初始化。
 
 注意：Deploy Button 是模板克隆式部署，不会直接接管你已经 fork 的仓库。页面里的"项目名称"会用作新 Git 仓库名；如果你的 Git 账号里已经存在同名仓库，把它改成例如 `clawemail-web-manager`、`clawemail-cf` 这类未占用名称即可。
 
@@ -304,6 +304,8 @@ npm run cf:migrate
 ```powershell
 npm run cf:deploy
 ```
+
+手动部署时也可以跳过 `npm run cf:migrate`，应用会在首次 API 请求时自动建表；保留该命令是为了需要显式执行迁移的场景。
 
 Cloudflare 版入口与原 API 保持一致，前端仍调用同源 `/api/*`。如果需要回到原服务器版，继续使用 `npm run build && npm start` 或 Docker 部署即可。
 
