@@ -1,7 +1,5 @@
 # Claw Email Web Manager
 
-[![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/WangXingFan/ClawEmail)
-
 基于 `claw.163.com` 的 **子邮箱批量管理 / 实时收发** 一体化前后端。
 通过 Web UI 验证码登录 Claw，自动派生 Dashboard Cookie 与 API Key，为每个子邮箱维持长连接监听，新邮件实时入库并经 SSE 推送给前端，可在线发件、回复、删除（远端 + 本地双删）、下载附件。
 
@@ -254,8 +252,6 @@ docker run -d --name clawemail \
 
 ## 10. Cloudflare 无服务器部署
 
-[![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/WangXingFan/ClawEmail)
-
 本仓库同时提供 Cloudflare Workers + Static Assets + D1 的部署入口：
 
 ```text
@@ -269,14 +265,18 @@ wrangler.toml
 - Cloudflare 版不运行常驻邮箱 WebSocket 监听器；收件箱通过前端刷新或 `GET /api/mails?sync=true` 请求触发同步。
 - D1 替代本地 SQLite 文件；不需要自建服务器或挂载磁盘。
 - 附件仍然不入库，下载时从 Claw 远端按需转发。
+- D1 表结构会在首次访问 `/api/*` 时自动初始化。
 
-一键部署会跳转到 Cloudflare，由 Cloudflare 克隆本仓库到你的 GitHub/GitLab 账号、创建 Workers Builds 项目，并按 `wrangler.toml` 自动准备 D1 绑定。部署过程中需要填写 `ADMIN_PASSWORD`。D1 表结构会在首次访问 `/api/*` 时自动初始化。
+推荐部署方式：
 
-注意：Deploy Button 是模板克隆式部署，不会直接接管你已经 fork 的仓库。页面里的"项目名称"会用作新 Git 仓库名；如果你的 Git 账号里已经存在同名仓库，把它改成例如 `clawemail-web-manager`、`clawemail-cf` 这类未占用名称即可。
+1. 先 Fork 本仓库到自己的 GitHub 账号。
+2. 进入 Cloudflare 控制台。
+3. 进入 `Workers & Pages` → `Create application` → `Import a repository`。
+4. 选择自己的 fork 仓库。
+5. 将项目名称改为小写，例如 `clawemail`、`clawemail-cf`。
+6. 按页面步骤一路下一步，直到部署完成。
 
-如果你希望先 fork 本仓库，再让 Cloudflare 部署你的 fork：在 Cloudflare 控制台进入 `Workers & Pages` → `Create application` → `Import a repository`，选择你的 fork 仓库并部署。这是部署已有 fork 的正确入口。
-
-手动部署：
+本地 Wrangler 手动部署：
 
 ```powershell
 npx wrangler login
