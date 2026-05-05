@@ -270,7 +270,11 @@ wrangler.toml
 - D1 替代本地 SQLite 文件；不需要自建服务器或挂载磁盘。
 - 附件仍然不入库，下载时从 Claw 远端按需转发。
 
-一键部署会跳转到 Cloudflare，由 Cloudflare 克隆仓库、创建 Workers Builds 项目，并按 `wrangler.toml` 自动准备 D1 绑定。部署过程中需要填写 `ADMIN_PASSWORD`。
+一键部署会跳转到 Cloudflare，由 Cloudflare 克隆本仓库到你的 GitHub/GitLab 账号、创建 Workers Builds 项目，并按 `wrangler.toml` 自动准备 D1 绑定。部署过程中需要填写 `ADMIN_PASSWORD`。
+
+注意：Deploy Button 是模板克隆式部署，不会直接接管你已经 fork 的仓库。页面里的"项目名称"会用作新 Git 仓库名；如果你的 Git 账号里已经存在同名仓库，把它改成例如 `clawemail-web-manager`、`clawemail-cf` 这类未占用名称即可。
+
+如果你希望先 fork 本仓库，再让 Cloudflare 部署你的 fork：在 Cloudflare 控制台进入 `Workers & Pages` → `Create application` → `Import a repository`，选择你的 fork 仓库并部署。这是部署已有 fork 的正确入口。
 
 手动部署：
 
