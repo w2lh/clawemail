@@ -279,7 +279,7 @@ npx wrangler login
 npx wrangler d1 create clawemail
 ```
 
-把上一步输出的 `database_id` 写入 `wrangler.toml`：
+如果 Wrangler 提示是否把 D1 配置写入 `wrangler.toml`，选择 `Yes`。手动填写时应补上 `database_id`：
 
 ```toml
 [[d1_databases]]

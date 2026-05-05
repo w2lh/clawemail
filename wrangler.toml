@@ -10,7 +10,6 @@ run_worker_first = true
 [[d1_databases]]
 binding = "DB"
 database_name = "clawemail"
-database_id = "replace-with-cloudflare-d1-database-id"
 
 [vars]
 CLAW_DOMAIN = "claw.163.com"
